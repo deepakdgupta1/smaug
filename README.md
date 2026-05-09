@@ -12,6 +12,7 @@ Archive your Twitter/X bookmarks (and/or optionally, likes) to markdown. Automat
 - [Getting Twitter Credentials](#getting-twitter-credentials)
 - [What It Does](#what-it-does)
 - [Running](#running)
+- [Daily Knowledge Sync](#daily-knowledge-sync)
 - [Categories](#categories)
 - [Automation](#automation)
 - [Output](#output)
@@ -98,7 +99,10 @@ If you don't want to use the wizard to make it easy, you can manually put your s
 ## Running Manually
 
 ```bash
-# Full job (fetch + process with Claude)
+# Daily sync — fetch new bookmarks + download all linked content (recommended)
+npx smaug daily
+
+# Full one-shot job (fetch + process with Claude, no deep link download)
 npx smaug run
 
 # Fetch from bookmarks (default)
@@ -142,6 +146,61 @@ npx smaug run --limit 50 -t    # Process 50 at a time with token tracking
 ```
 
 Use the `-t` flag to monitor usage. See [Token Usage Tracking](#token-usage-tracking) for cost estimates by model.
+
+## Daily Knowledge Sync
+
+`smaug daily` is a two-phase pipeline that goes beyond `smaug run`:
+
+**Phase 1 — Bookmark sync** (same as `smaug run`): fetches new bookmarks, expands links, and invokes Claude to archive tweets and file initial knowledge entries.
+
+**Phase 2 — Deep link download**: after Claude processes the bookmarks, Smaug scans every `## Links` section across all knowledge files and downloads any linked URLs that haven't been filed yet — GitHub READMEs, articles, arXiv papers, and general web pages. This catches anything Phase 1 may have missed and ensures linked resources are always available offline.
+
+```bash
+# Run the full daily sync
+npx smaug daily
+
+# Test without committing to git
+npx smaug daily --no-commit
+
+# With token tracking
+npx smaug daily -t
+```
+
+### How delta tracking works
+
+Smaug maintains `.state/knowledge-state.json` (gitignored) as the authoritative record of what has been processed:
+
+| Field | Purpose |
+|---|---|
+| `processedTweetIds` | Tweet IDs already archived — prevents re-processing |
+| `downloadedUrls` | Article/repo URLs already filed — Phase 2 skips these |
+| `failedUrls` | URLs that failed extraction, with attempt count — retried up to 3× then abandoned |
+
+On first run, this file is bootstrapped automatically from your existing `bookmarks.md` (tweet IDs) and `knowledge/` files (source URLs). Subsequent runs only process the delta.
+
+### Tiered content extraction
+
+Phase 2 tries each extraction strategy in order, stopping at the first success:
+
+| Tier | Target | Method |
+|---|---|---|
+| 1 | GitHub repos | GitHub REST API → full README + metadata |
+| 2 | X/Twitter articles | `bird article` CLI |
+| 3 | arXiv | Direct HTTP |
+| 4 | Paywalled sites | `archive.ph` fallback |
+| 5 | General web | Direct HTTP + `<article>`/`<main>` extraction |
+| 6 | Failure | Logged to `failedUrls`, retried next run |
+
+### Finding gaps manually
+
+To inspect which URLs in your knowledge base have not yet been downloaded:
+
+```bash
+python3 find-undownloaded-links.py
+# Writes knowledge/undownloaded-links.md
+```
+
+See [`docs/daily-sync-architecture.md`](docs/daily-sync-architecture.md) for full design rationale.
 
 ## Categories
 
@@ -238,18 +297,32 @@ When folders are configured:
 
 ## Automation
 
-Run Smaug automatically every 30 minutes:
-
-### Option A: PM2 (recommended)
+### Recommended: daily sync at 3 AM with PM2
 
 ```bash
 npm install -g pm2
-pm2 start "npx smaug run" --cron "*/30 * * * *" --name smaug
+
+pm2 start "npx smaug daily" \
+  --cron "0 3 * * *" \
+  --name smaug-daily \
+  --log /path/to/smaug/smaug.log \
+  --no-autorestart
+
 pm2 save
-pm2 startup    # Start on boot
+pm2 startup    # Follow the printed command to survive reboots
 ```
 
-### Option B: Cron
+`smaug daily` (rather than `smaug run`) is recommended for scheduled use because it also runs Phase 2 deep link download and maintains authoritative delta state so nothing is ever double-processed.
+
+```bash
+# Inspect logs
+pm2 logs smaug-daily --lines 50
+
+# Run now (for testing)
+pm2 restart smaug-daily
+```
+
+### Option B: Cron (run every 30 minutes, bookmark sync only)
 
 ```bash
 crontab -e
@@ -362,6 +435,9 @@ Example `smaug.config.json`:
 | `claudeTimeout` | `900000` | Max processing time (15 min) |
 | `parallelThreshold` | `8` | Min bookmarks before parallel processing kicks in |
 | `webhookUrl` | `null` | Discord/Slack webhook for notifications |
+| `knowledgeStateFile` | `./.state/knowledge-state.json` | Path to daily sync delta state (gitignored) |
+| `maxFailAttempts` | `3` | Times to retry a failed URL before abandoning |
+| `dailySyncCommit` | `true` | Auto-commit after `smaug daily` completes |
 
 Environment variables also work: `AUTH_TOKEN`, `CT0`, `SOURCE`, `INCLUDE_MEDIA`, `ARCHIVE_FILE`, `TIMEZONE`, `CLI_TOOL`, `CLAUDE_MODEL`, `OPENCODE_MODEL`, etc.
 
