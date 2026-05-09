@@ -1,3 +1,7 @@
+---
+model: claude-haiku-4-5-20251001
+---
+
 # /process-bookmarks
 
 Process prepared Twitter bookmarks into a markdown archive with rich analysis and optional filing to a knowledge library.
