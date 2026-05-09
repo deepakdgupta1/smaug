@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { runDailySync } from './daily-sync.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -206,6 +207,28 @@ async function main() {
       initConfig(args[1]);
       break;
 
+    case 'daily': {
+      const noCommit = args.includes('--no-commit');
+      const trackTokens = args.includes('--track-tokens') || args.includes('-t');
+      const limitIdx = args.findIndex(a => a === '--limit' || a === '-l');
+      let limit = null;
+      if (limitIdx !== -1 && args[limitIdx + 1]) {
+        limit = parseInt(args[limitIdx + 1], 10);
+        if (isNaN(limit) || limit <= 0) {
+          console.error('Invalid --limit value. Must be a positive number.');
+          process.exit(1);
+        }
+      }
+      try {
+        const result = await runDailySync({ noCommit, trackTokens, limit });
+        process.exit(result.success ? 0 : 1);
+      } catch (err) {
+        console.error('Daily sync failed:', err.message);
+        process.exit(1);
+      }
+      break;
+    }
+
     case 'run': {
       // Run the full job (same as node src/job.js)
       const jobPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'job.js');
@@ -346,6 +369,8 @@ async function main() {
 
 Commands:
   setup          Interactive setup wizard (start here!)
+  daily          Run daily sync: fetch new bookmarks + download all linked content
+  daily --no-commit  Run daily sync without git commit (useful for testing)
   run            Run the full job (fetch + process with Claude)
   run -t         Run with token usage tracking (--track-tokens)
   run --limit N  Process only N bookmarks (for large backlogs)
